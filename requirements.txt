@@ -1,0 +1,6 @@
+google-genai
+python-pptx
+pymupdf
+Pillow
+python-dotenv
+tkinterdnd2
