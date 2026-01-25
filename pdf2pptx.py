@@ -199,6 +199,26 @@ class PPTXBuilder:
         except Exception:
             return (255, 255, 255)
 
+    def make_image_transparent(self, image, bg_color, tolerance=30):
+        """
+        Makes pixels matching bg_color transparent.
+        """
+        img = image.convert("RGBA")
+        datas = img.getdata()
+        
+        newData = []
+        bg_r, bg_g, bg_b = bg_color
+        
+        for item in datas:
+            r, g, b, a = item
+            if abs(r - bg_r) < tolerance and abs(g - bg_g) < tolerance and abs(b - bg_b) < tolerance:
+                newData.append((r, g, b, 0))
+            else:
+                newData.append(item)
+                
+        img.putdata(newData)
+        return img
+
     def add_slide(self, original_image, layout_data, pdf_width, pdf_height):
         # Create a blank slide
         blank_slide_layout = self.prs.slide_layouts[6] 
@@ -208,7 +228,7 @@ class PPTXBuilder:
         scale_x = self.prs.slide_width / 1000.0
         scale_y = self.prs.slide_height / 1000.0
         
-        if self.mode == "text_focus":
+        if self.mode in ["text_focus", "figure_focus"]:
             # 1. Set background image (Full Page)
             img_stream = io.BytesIO()
             original_image.save(img_stream, format="PNG")
@@ -216,33 +236,75 @@ class PPTXBuilder:
             
             slide.shapes.add_picture(img_stream, 0, 0, self.prs.slide_width, self.prs.slide_height)
 
-        # 2. Add Images (Standard Mode only)
-        if self.mode == "standard" and "image_regions" in layout_data:
-            for img_region in layout_data["image_regions"]:
-                ymin, xmin, ymax, xmax = img_region["box_2d"]
-                
-                w, h = original_image.size
-                
-                left = int((xmin / 1000.0) * w)
-                top = int((ymin / 1000.0) * h)
-                right = int((xmax / 1000.0) * w)
-                bottom = int((ymax / 1000.0) * h)
-                
-                if right > left and bottom > top:
-                    cropped_img = original_image.crop((left, top, right, bottom))
-                    img_stream = io.BytesIO()
-                    cropped_img.save(img_stream, format="PNG")
-                    img_stream.seek(0)
+        if "image_regions" in layout_data:
+            if self.mode == "standard":
+                for img_region in layout_data["image_regions"]:
+                    ymin, xmin, ymax, xmax = img_region["box_2d"]
                     
-                    slide_left = int(xmin * scale_x)
-                    slide_top = int(ymin * scale_y)
-                    slide_width = int((xmax - xmin) * scale_x)
-                    slide_height = int((ymax - ymin) * scale_y)
+                    w, h = original_image.size
                     
-                    try:
-                        slide.shapes.add_picture(img_stream, slide_left, slide_top, slide_width, slide_height)
-                    except Exception as e:
-                        print(f"Failed to add image: {e}")
+                    left = int((xmin / 1000.0) * w)
+                    top = int((ymin / 1000.0) * h)
+                    right = int((xmax / 1000.0) * w)
+                    bottom = int((ymax / 1000.0) * h)
+                    
+                    if right > left and bottom > top:
+                        cropped_img = original_image.crop((left, top, right, bottom))
+                        img_stream = io.BytesIO()
+                        cropped_img.save(img_stream, format="PNG")
+                        img_stream.seek(0)
+                        
+                        slide_left = int(xmin * scale_x)
+                        slide_top = int(ymin * scale_y)
+                        slide_width = int((xmax - xmin) * scale_x)
+                        slide_height = int((ymax - ymin) * scale_y)
+                        
+                        try:
+                            slide.shapes.add_picture(img_stream, slide_left, slide_top, slide_width, slide_height)
+                        except Exception as e:
+                            print(f"Failed to add image: {e}")
+
+            elif self.mode == "figure_focus":
+                for img_region in layout_data["image_regions"]:
+                    ymin, xmin, ymax, xmax = img_region["box_2d"]
+                    
+                    w, h = original_image.size
+                    
+                    left = int((xmin / 1000.0) * w)
+                    top = int((ymin / 1000.0) * h)
+                    right = int((xmax / 1000.0) * w)
+                    bottom = int((ymax / 1000.0) * h)
+                    
+                    if right > left and bottom > top:
+                        # 1. Mask the region on the background
+                        bg_color = self.get_edge_color(original_image, [ymin, xmin, ymax, xmax])
+                        
+                        mask_left = int(xmin * scale_x)
+                        mask_top = int(ymin * scale_y)
+                        mask_width = int((xmax - xmin) * scale_x)
+                        mask_height = int((ymax - ymin) * scale_y)
+                        
+                        mask_shape = slide.shapes.add_shape(
+                            1, # MSO_SHAPE.RECTANGLE
+                            mask_left, mask_top, mask_width, mask_height
+                        )
+                        mask_shape.fill.solid()
+                        mask_shape.fill.fore_color.rgb = RGBColor(bg_color[0], bg_color[1], bg_color[2])
+                        mask_shape.line.fill.background()
+                        mask_shape.shadow.inherit = False 
+                        
+                        # 2. Create Transparent Image Overlay
+                        cropped_img = original_image.crop((left, top, right, bottom))
+                        transparent_img = self.make_image_transparent(cropped_img, bg_color)
+                        
+                        img_stream = io.BytesIO()
+                        transparent_img.save(img_stream, format="PNG")
+                        img_stream.seek(0)
+                        
+                        try:
+                            slide.shapes.add_picture(img_stream, mask_left, mask_top, mask_width, mask_height)
+                        except Exception as e:
+                            print(f"Failed to add transparent image: {e}")
 
         # 3. Add Text
         if "text_blocks" in layout_data:
@@ -260,7 +322,7 @@ class PPTXBuilder:
                 width = int((xmax_norm - xmin_norm) * scale_x)
                 height = int((ymax_norm - ymin_norm) * scale_y)
 
-                if self.mode == "text_focus":
+                if self.mode in ["text_focus", "figure_focus"]:
                     # --- Strategy: Two Shapes ---
                     # Shape 1: Mask Rectangle (Inflated, Filled with Bg Color, No Text)
                     # Shape 2: Text Box (Standard Coordinates, No Fill, Text)
@@ -323,8 +385,9 @@ class PPTXBuilder:
                     if is_bold:
                         p.font.bold = True
                     
+                    
                     # Font Family logic
-                    if self.mode == "text_focus":
+                    if self.mode in ["text_focus", "figure_focus"]:
                         if font_family_style == "serif":
                              p.font.name = "MS Mincho"
                         else:
@@ -349,7 +412,7 @@ def main():
     parser.add_argument("input_file", help="Path to input file (PDF, PNG, JPG, etc.)")
     parser.add_argument("output_pptx", help="Path to output PPTX file")
     parser.add_argument("--api_key", help="Google Gemini API Key", default=os.environ.get("GOOGLE_API_KEY"))
-    parser.add_argument("--mode", help="Conversion mode: 'standard' or 'text_focus'", default="standard", choices=["standard", "text_focus"])
+    parser.add_argument("--mode", help="Conversion mode: 'standard', 'text_focus', or 'figure_focus'", default="figure_focus", choices=["standard", "text_focus", "figure_focus"])
     parser.add_argument("--font_scale", help="Font size scaling factor", default=1.1, type=float)
     
     args = parser.parse_args()

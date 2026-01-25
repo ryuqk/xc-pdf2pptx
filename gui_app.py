@@ -40,8 +40,8 @@ class PDF2PPTXApp(TkinterDnD.Tk):
         
         # Mode
         ttk.Label(settings_frame, text="Mode:").pack(side="left", padx=10)
-        self.mode_var = tk.StringVar(value="text_focus")
-        modes = ["text_focus", "standard"]
+        self.mode_var = tk.StringVar(value="figure_focus")
+        modes = ["text_focus", "standard", "figure_focus"]
         self.mode_combo = ttk.Combobox(settings_frame, textvariable=self.mode_var, values=modes, state="readonly", width=15)
         self.mode_combo.pack(side="left")
 
@@ -63,6 +63,8 @@ class PDF2PPTXApp(TkinterDnD.Tk):
         # DND Checks
         self.file_listbox.drop_target_register(DND_FILES)
         self.file_listbox.dnd_bind('<<Drop>>', self._on_drop)
+        self.file_listbox.bind('<Delete>', self._delete_files)
+        self.file_listbox.bind('<BackSpace>', self._delete_files)
         
         # Buttons for list
         btn_frame = ttk.Frame(list_frame)
@@ -120,6 +122,17 @@ class PDF2PPTXApp(TkinterDnD.Tk):
         self.file_queue = []
         self.file_listbox.delete(0, tk.END)
         self.progress_var.set(0)
+
+    def _delete_files(self, event=None):
+        selection = self.file_listbox.curselection()
+        if not selection:
+            return
+        
+        # Reverse sort to delete from end (index stability)
+        for index in sorted(selection, reverse=True):
+            if 0 <= index < len(self.file_queue):
+                del self.file_queue[index]
+                self.file_listbox.delete(index)
 
     def _save_api_key(self):
         key = self.api_key_var.get().strip()
